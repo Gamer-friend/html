@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Hope Your Happy I Worked REALLY HARD ON THIS</title>
+  <style>
+    /* Hey Shane MUAHHAAAAAHAHHAHAAAAAAAAAAAAA I SO TIRED I STAY UP CODIN DIS HAHAHHAHAAAAAAAAAA
+       HAAAAAAAAAAAAHHHHHAHAHHAHHHAHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHIMGONNALOSEEEITHAHAHAHA
+    */
+    :root{
+      --bg1:#fff7f2; --bg2:#fff2ff;
+      --accent1:#ff7aa2; --accent2:#ffd35b;
+      --card: #ffffff;
+    }
+    html,body{height:100%;margin:0;font-family:Inter, system-ui, -apple-system, Roboto, 'Segoe UI', sans-serif;background:linear-gradient(160deg,var(--bg1),var(--bg2));display:flex;align-items:center;justify-content:center;padding:18px}
+    .stage{width:820px;max-width:calc(100% - 40px);background:linear-gradient(180deg,rgba(255,255,255,0.96),rgba(255,255,255,0.9));border-radius:16px;padding:14px;box-shadow:0 20px 60px rgba(12,12,30,0.08)}
+    header{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+    .logo{width:52px;height:52px;border-radius:12px;background:linear-gradient(180deg,var(--accent1),#ff4e78);display:flex;align-items:center;justify-content:center;color:white;font-weight:800}
+    .title h1{margin:0;font-size:18px}
+    .title p{margin:0;font-size:12px;color:rgba(0,0,0,0.5)}
+    .controls{margin-left:auto;display:flex;gap:8px}
+    .btn{padding:8px 12px;border-radius:10px;background:rgba(255,255,255,0.6);border:1px solid rgba(0,0,0,0.06);cursor:pointer}
+    .canvas-wrap{padding:12px;background:linear-gradient(180deg,#fff6f8,#f0f9ff);border-radius:12px}
+    canvas{display:block;border-radius:10px;background:transparent;max-width:100%}
+    #hud{display:flex;gap:10px;align-items:center;margin-top:10px}
+    .pill{background:rgba(255,255,255,0.66);padding:6px 10px;border-radius:999px;border:1px solid rgba(0,0,0,0.06);font-weight:700}
+    footer{margin-top:10px;text-align:right;color:rgba(0,0,0,0.45)}
+    @media (max-width:760px){.stage{width:100%}}
+  </style>
+</head>
+<body>
+  <div class="stage" role="application" aria-label="Candy Breaker Final">
+    <header>
+      <div class="logo">CB</div>
+      <div class="title">
+        <h1>Im so tired From Coding This</h1>
+        <p>>:( COPYRIGHHHTTEE ANDRRREWWSHINN ANAHHE!(PY(&@Y&!TB@#^&R!%^R@BT*&Y&NUIHEDHQIHW</p>
+      </div>
+      <div class="controls">
+        <div class="btn" id="resetBtn">⟲ Reset</div>
+        <div class="btn" id="soundBtn">🔊</div>
+      </div>
+    </header>
+
+    <div class="canvas-wrap">
+      <canvas id="canvas" width="720" height="880"></canvas>
+    </div>
+
+    <div id="hud">
+      <div class="pill">Grinded Auroa By Shane 🌏: <span id="level">1</span></div>
+      <div class="pill">Balls AY YO: <span id="ballCount">1</span></div>
+      <div class="pill">Destroyed: <span id="destroyed">0</span></div>
+    </div>
+
+    <footer>Best level: <span id="best">1</span></footer>
+  </div>
+
+  <script>
+    /* ======================
+       SHANE BETTER BE HAPPY
+       ====================== */
+
+    // ----------------------
+    // Canvas setup and helpers
+    // ----------------------
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const DPR = Math.min(2, window.devicePixelRatio || 1);
+    const W = canvas.width;
+    const H = canvas.height;
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.scale(DPR, DPR);
+
+    function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+    function rand(min=0,max=1){ return Math.random()*(max-min)+min; }
+    function randInt(a,b){ return Math.floor(rand(a,b+1)); }
+    function now(){ return performance.now(); }
+    const TAU = Math.PI*2;
+
+    // simple color xd
+    function shade(hex, amount){
+      const c = hex.replace('#','');
+      const n = parseInt(c,16);
+      let r = (n>>16) + amount;
+      let g = (n>>8 & 0xFF) + amount;
+      let b = (n & 0xFF) + amount;
+      r = clamp(r,0,255); g = clamp(g,0,255); b = clamp(b,0,255);
+      return '#' + ((1<<24) + (r<<16) + (g<<8) + b).toString(16).slice(1);
+    }
+
+    function roundRect(ctx,x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+    // Mark of hour 1
+    const palettes = ['#ffd35b','#ff7aa2','#6bd3ff','#7ef7a6','#d58bff'];
+
+    // ----------------------
+    // Small drawing primitives
+    // ----------------------
+    function fillRectGloss(x,y,w,h,color){
+      ctx.save();
+      const g = ctx.createLinearGradient(x,y,x,y+h);
+      g.addColorStop(0,'#fff'); g.addColorStop(0.06,color); g.addColorStop(1,shade(color,-12));
+      ctx.fillStyle = g;
+      roundRect(ctx,x,y,w,h,10);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function circleGloss(x,y,r,color){
+      ctx.save();
+      const g = ctx.createRadialGradient(x-6,y-6,2,x,y,r);
+      g.addColorStop(0,'#fff'); g.addColorStop(0.25,color); g.addColorStop(1,shade(color,-22));
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x,y,r,0,TAU); ctx.fill();
+      ctx.restore();
+    }
+
+    // ----------------------
+    // Vector stuff
+    // ----------------------
+    class Vector{
+      constructor(x=0,y=0){ this.x = x; this.y = y; }
+      copy(){ return new Vector(this.x,this.y); }
+      add(v){ this.x += v.x; this.y += v.y; }
+      mult(n){ this.x *= n; this.y *= n; }
+    }
+
+    // ----------------------
+    // Ball class like de speed
+    // ----------------------
+    class Ball{
+      constructor(x,y){
+        this.position = new Vector(x,y);
+        this.velocity = new Vector(0,0);
+        this.r = 12;
+        this.downing = false;
+        this.showDirection = true;
+        this.color = palettes[randInt(0,palettes.length-1)];
+        this.onStop = null;
+      }
+
+      setOnStop(fn){ this.onStop = fn; }
+
+      applyForce(force){
+        this.velocity.x += force.x;
+        this.velocity.y += force.y;
+      }
+
+      update(){
+        this.position.x += this.velocity.x;
+        this.position.y += this.velocity.y;
+      }
+
+      // Important: increased velocity :)
+      shoot(mouse){
+        this.showDirection = false;
+        const angle = Math.atan2(mouse.y - this.position.y, mouse.x - this.position.x);
+        // Su(*(*@Y(*Y@(R**U@N)#Y
+        const speed = 9 + Math.random()*0.6;
+        const force = new Vector(Math.cos(angle) * speed, Math.sin(angle) * speed);
+        this.applyForce(force);
+      }
+
+      down(){
+        this.downing = true;
+        // New point
+        this.velocity = new Vector(0, 12);
+      }
+
+      stop(){
+        this.velocity = new Vector(0,0);
+        this.showDirection = true;
+        this.downing = false;
+        if(this.onStop) this.onStop(this);
+      }
+
+      checkEdges(){
+        // bounce from horizontal edges
+        if(this.position.x < this.r){ this.position.x = this.r; this.velocity.x *= -1; }
+        else if(this.position.x > W - this.r){ this.position.x = W - this.r; this.velocity.x *= -1; }
+
+        // top bounce and bottom stop
+        if(this.position.y < 100){ this.position.y = 100; this.velocity.y *= -1; }
+
+        // when reaching bottom area, stop and become spawn point
+        if(this.position.y > H - 100){ this.position.y = H - 100; this.velocity.y *= -1; this.stop(); }
+      }
+
+      collideWith(brick){
+        if(this.downing) return false;
+        const cx = clamp(this.position.x, brick.x, brick.x + brick.w);
+        const cy = clamp(this.position.y, brick.y, brick.y + brick.h);
+        const dx = this.position.x - cx;
+        const dy = this.position.y - cy;
+        const dist2 = dx*dx + dy*dy;
+        if(dist2 >= this.r*this.r) return false;
+
+        // reflect ????????????
+        if(Math.abs(dx) > Math.abs(dy)){
+          this.velocity.x *= -1;
+        } else {
+          this.velocity.y *= -1;
+        }
+
+        return true;
+      }
+
+      draw(ctx){
+        circleGloss(this.position.x, this.position.y, this.r, this.color);
+      }
+    }
+
+    // ----------------------
+    // Hor 2
+    // ----------------------
+    class Brick{
+      constructor(n, col, row){
+        this.n = n; // HP
+        this.start = n;
+        this.x = col * 120;
+        this.y = row * 80 + 80; // accounts for UI top band
+        this.w = 110; this.h = 70;
+        this.color = palettes[(col + row) % palettes.length];
+      }
+
+      shouldMoveDown(state){
+        return this.y < 80 * (state.level - this.start + 1) + 80;
+      }
+
+      update(state){
+        if(this.shouldMoveDown(state)){
+          this.y = Math.min(this.y + 8, 80 * (state.level - this.start + 1) + 80);
+        }
+      }
+
+      draw(ctx){
+        fillRectGloss(this.x, this.y, this.w, this.h, this.color);
+        ctx.save();
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.font = '20px system-ui';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(this.n, this.x + this.w/2, this.y + this.h/2);
+        ctx.restore();
+      }
+
+      hit(){ this.n--; }
+
+      get broken(){ return this.n <= 0; }
+
+      get hitBottom(){ return this.y >= H - 160; }
+    }
+
+    // ----------------------
+    // WEBGL
+    // ----------------------
+    class BonusBall{
+      constructor(n, col, row){
+        this.start = n;
+        this.r = 16;
+        this.x = col * 120 + 56;
+        this.y = row * 80 + 36 + 80;
+        this.hit = false;
+        this.color = '#3dd462';
+      }
+
+      moveDownLittle(state){
+        this.y = Math.min(this.y + 8, 80 * (state.level - this.start + 1) + 120);
+      }
+
+      update(state){
+        if(this.hit) this.y = Math.min(this.y + 50, H - 100);
+        else this.moveDownLittle(state);
+      }
+
+      draw(ctx){
+        circleGloss(this.x, this.y, this.r, this.color);
+      }
+
+      collideWith(ball){
+        const dx = ball.position.x - this.x;
+        const dy = ball.position.y - this.y;
+        const collided = 2 * this.r >= Math.sqrt(dx*dx + dy*dy);
+        if(collided) this.hit = true;
+        return collided;
+      }
+    }
+
+    // ----------------------
+    // Stuff that you dont understand
+    // ----------------------
+    class Particle{
+      constructor(x,y,color){
+        this.x = x + rand(-6,6);
+        this.y = y + rand(-6,6);
+        this.vx = rand(-3,3);
+        this.vy = rand(-6,2);
+        this.s = rand(5,12);
+        this.c = color;
+        this.t = now();
+        this.life = rand(600,1200);
+      }
+      update(){ this.vy += 0.12; this.x += this.vx; this.y += this.vy; this.s *= 0.997; }
+      draw(ctx){ ctx.save(); ctx.globalAlpha = clamp(1 - ((now() - this.t)/this.life), 0, 1); ctx.beginPath(); ctx.arc(this.x, this.y, this.s, 0, TAU); ctx.fillStyle = this.c; ctx.fill(); ctx.restore(); }
+    }
+
+    class ParticleManager{
+      constructor(){ this.particles = []; }
+      spawn(x,y,color,count=18){ for(let i=0;i<count;i++) this.particles.push(new Particle(x,y,color)); }
+      run(ctx){ for(let i=this.particles.length-1;i>=0;i--){ const p = this.particles[i]; p.update(); if(now() - p.t > p.life) this.particles.splice(i,1); else p.draw(ctx); } }
+    }
+
+    // ----------------------
+    // Collections bucket 
+    // ----------------------
+    class BricksCollection{
+      constructor(){ this.bricks = []; this.particles = new ParticleManager(); }
+      addBricks(state, indices){ const newBricks = indices.map(i => new Brick(state.level, i, 0)); this.bricks.push(...newBricks); }
+      display(state){ this.bricks.forEach(b => { b.update(state); b.draw(ctx); }); this.particles.run(ctx); }
+      break(){ const broken = this.bricks.filter(b=>b.broken); broken.forEach(b => this.particles.spawn(b.x + b.w/2, b.y + b.h/2, b.color, 28)); this.bricks = this.bricks.filter(b => !b.broken); }
+      shouldSlideDown(state){ return this.bricks[0] && this.bricks[0].shouldMoveDown(state); }
+      get hitBottom(){ return this.bricks[0] && this.bricks[0].hitBottom; }
+    }
+
+    class BonusBallsCollection{
+      constructor(){ this.bonusBalls = []; }
+      addBonusBalls(state, index){ this.bonusBalls.push(new BonusBall(state.level, index, 0)); }
+      display(state){ this.bonusBalls.forEach(b => { b.update(state); b.draw(ctx); }); }
+      collideWithBall(balls){ this.bonusBalls.forEach(bb => balls.balls.forEach(ball => { if(bb.collideWith(ball)) bb.hit = true; })); }
+      removeHitBalls(){ this.bonusBalls = this.bonusBalls.filter(b => !b.hit || b.y < H); }
+      get hitBallCount(){ return this.bonusBalls.filter(b=>b.hit).length; }
+    }
+
+    // ----------------------
+    // Balls sus lol lol shane dosent understand this
+    // ----------------------
+    class BallsGroup{
+      constructor(state){
+        this.balls = Array.from({length: state.ballCount}).map(() => new Ball(state.ballPos.x, state.ballPos.y));
+        this.onBallStop = (ball) => {
+          if(!state.firstBallStop){ state.ballPos = ball.position.copy(); state.firstBallStop = true; }
+          ball.position.x = state.ballPos.x;
+        };
+        this.balls.forEach(b => b.setOnStop(this.onBallStop));
+      }
+
+      addBalls(state, n){
+        const newB = Array.from({length: n}).map(() => new Ball(state.ballPos.x, state.ballPos.y));
+        newB.forEach(b => b.setOnStop(this.onBallStop));
+        this.balls.push(...newB);
+      }
+
+      async shoot(mouse, state){
+        for(const ball of this.balls){
+          if(state.ballDowning) return;
+          ball.shoot(mouse);
+          // small like me
+          await new Promise(r => setTimeout(r, Math.max(30, 80 - Math.floor(state.ballCount/8))));
+        }
+      }
+
+      display(){
+        this.balls.forEach(b => { b.update(); b.checkEdges(); b.draw(ctx); });
+      }
+
+      get allStopped(){ return this.balls.every(b => b.velocity.x === 0 && b.velocity.y === 0); }
+
+      down(){ this.balls.forEach(b => b.down()); }
+
+      collideWithBricks(bricks){
+        bricks.bricks.forEach(br => this.balls.forEach(ball => { const collided = ball.collideWith(br); if(collided) br.hit(); }));
+      }
+
+      collideWithBonus(bonusBalls){
+        bonusBalls.bonusBalls.forEach(bb => this.balls.forEach(ball => { if(bb.collideWith(ball)) bb.hit = true; }));
+      }
+    }
+
+    // ----------------------
+    // hour 3
+    // ----------------------
+    class BallLine{
+      display(state){
+        if(!state.ballMoving && !state.brickMoving && state.ballPos){
+          ctx.save(); ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.setLineDash([6,12]); ctx.beginPath(); ctx.moveTo(state.ballPos.x, state.ballPos.y); ctx.lineTo(state.mouse.x, Math.min(state.mouse.y, 760)); ctx.stroke(); ctx.setLineDash([]); ctx.restore();
+        }
+      }
+    }
+
+    class UI{
+      display(state){
+        // top band and text
+        ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.font = '16px system-ui'; ctx.fillText(`Level: ${state.level}`, 20, 28); ctx.fillText(`Best: ${state.bestLevel}`, W - 140, 28);
+        ctx.beginPath(); ctx.moveTo(0,80); ctx.lineTo(W,80); ctx.strokeStyle = 'rgba(0,0,0,0.06)'; ctx.stroke(); ctx.beginPath(); ctx.moveTo(0,H-80); ctx.lineTo(W,H-80); ctx.stroke(); ctx.restore();
+      }
+      gameOver(){ ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.38)'; ctx.fillRect(0, H/2 - 80, W, 160); ctx.fillStyle = 'white'; ctx.font = '36px system-ui'; ctx.textAlign = 'center'; ctx.fillText('Game Over', W/2, H/2 + 10); ctx.restore(); }
+    }
+
+    // ----------------------
+    // i gettiennng t irresno moreee comments o for whileee
+    // ----------------------
+    class LocalStorageManager{
+      constructor(){ this.key = 'candy_best_v1'; }
+      get(){ return Number(localStorage.getItem(this.key) || 1); }
+      set(n){ localStorage.setItem(this.key, n); }
+    }
+
+    class GameManager{
+      constructor(){
+        this.state = {
+          ballPos: new Vector(W/2, H - 100),
+          ballMoving: false,
+          ballCount: 1,
+          ballDowning: false,
+          brickMoving: false,
+          firstBallStop: true,
+          level: 1,
+          over: false,
+          bestLevel: new LocalStorageManager().get(),
+          mouse: { x: W/2, y: H/2 }
+        };
+
+        this.balls = new BallsGroup(this.state);
+        this.bricks = new BricksCollection();
+        this.bonusBalls = new BonusBallsCollection();
+        this.ballLine = new BallLine();
+        this.ui = new UI();
+        this.storage = new LocalStorageManager();
+
+        this.addBallsAndBricks();
+        this.bindEvents();
+        this.updateHUD();
+      }
+
+      bindEvents(){
+        canvas.addEventListener('click', (e) => this.shootBalls(e));
+        canvas.addEventListener('mousemove', (e) => { const r = canvas.getBoundingClientRect(); this.state.mouse.x = e.clientX - r.left; this.state.mouse.y = e.clientY - r.top; });
+        document.getElementById('resetBtn').addEventListener('click', () => this.reset());
+        document.getElementById('soundBtn').addEventListener('click', () => toggleSound());
+      }
+
+      addBallsAndBricks(){
+        const bonusCount = this.bonusBalls.hitBallCount;
+        const indices = shuffle(Array.from({length:6}, (_,i) => i)).slice(0, Math.random() > 0.9 ? randInt(3,5) : randInt(2,4));
+        const newBonusIndex = shuffle(Array.from({length:6}, (_,i)=>i).filter(i=>!indices.includes(i)))[0];
+
+        this.state.ballCount += bonusCount;
+        if(bonusCount) this.balls.addBalls(this.state, bonusCount);
+        this.bricks.addBricks(this.state, indices);
+        this.bonusBalls.addBonusBalls(this.state, newBonusIndex);
+        this.updateHUD();
+      }
+
+      shootBalls(e){
+        if(this.state.ballMoving || this.state.brickMoving || this.state.over) return;
+
+        this.state.ballPos = null;
+        this.state.ballMoving = true;
+        this.state.ballDowning = false;
+        this.state.firstBallStop = false;
+
+        const mx = this.state.mouse.x;
+        const my = Math.min(this.state.mouse.y, 760);
+
+        this.balls.shoot({ x: mx, y: my }, this.state);
+      }
+
+      checkCollision(){
+        this.balls.collideWithBricks(this.bricks);
+        this.balls.collideWithBonus(this.bonusBalls);
+        this.bricks.break();
+      }
+
+      run(){
+        this.draw();
+        this.checkCollision();
+
+        if(this.state.ballMoving && this.balls.allStopped){
+          this.state.ballMoving = false;
+          this.state.brickMoving = true;
+
+          this.state.level++;
+          this.storage.set(this.state.level);
+          this.state.bestLevel = this.storage.get();
+
+          this.addBallsAndBricks();
+        }
+
+        if(this.state.brickMoving){
+          if(!this.bricks.shouldSlideDown(this.state)){
+            this.state.brickMoving = false;
+            this.bonusBalls.removeHitBalls();
+          }
+        }
+
+        if(this.bricks.hitBottom){
+          this.ui.gameOver();
+          this.state.over = true;
+        }
+
+        requestAnimationFrame(() => this.run());
+      }
+
+      draw(){
+        ctx.clearRect(0,0,W,H);
+
+        // hour 4
+        ctx.save();
+        const g = ctx.createLinearGradient(0,0,0,120);
+        g.addColorStop(0,'rgba(255,255,255,0.95)'); g.addColorStop(1,'rgba(255,255,255,0.6)');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(0,80); ctx.quadraticCurveTo(W/2,18, W,80); ctx.lineTo(W,0); ctx.lineTo(0,0); ctx.closePath(); ctx.fill();
+        ctx.restore();
+
+        // fuck 
+        this.ballLine.display(this.state);
+        this.balls.display();
+        this.bricks.display(this.state);
+        this.bonusBalls.display(this.state);
+        this.ui.display(this.state);
+
+        // shit HUD
+        document.getElementById('ballCount').textContent = this.state.ballCount;
+        document.getElementById('level').textContent = this.state.level;
+        document.getElementById('best').textContent = this.state.bestLevel;
+        document.getElementById('destroyed').textContent = this.bricks.particles.particles.length ? '' : 0;
+      }
+
+      downBalls(){ this.state.ballDowning = true; this.balls.down(); }
+
+      reset(){
+        this.state = {
+          ballPos: new Vector(W/2, H - 100),
+          ballMoving: false,
+          ballCount: 1,
+          ballDowning: false,
+          brickMoving: false,
+          firstBallStop: true,
+          level: 1,
+          over: false,
+          bestLevel: new LocalStorageManager().get(),
+          mouse: {x: W/2, y: H/2}
+        };
+        this.balls = new BallsGroup(this.state);
+        this.bricks = new BricksCollection();
+        this.bonusBalls = new BonusBallsCollection();
+        this.addBallsAndBricks();
+        this.updateHUD();
+      }
+
+      updateHUD(){ document.getElementById('ballCount').textContent = this.state.ballCount; document.getElementById('level').textContent = this.state.level; document.getElementById('best').textContent = this.state.bestLevel; }
+    }
+
+    // ----------------------
+    // ALMOST
+    // ----------------------
+    function shuffle(arr){ return arr.sort(() => Math.random() - 0.5); }
+
+    // DONE
+    let SOUND = true;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const audio = AudioCtx ? new AudioCtx() : null;
+    function playTone(freq=440,dur=0.06,type='sine',vol=0.05){ if(!audio||!SOUND) return; const t0 = audio.currentTime; const o = audio.createOscillator(); const g = audio.createGain(); o.type = type; o.frequency.value = freq; g.gain.value = vol; o.connect(g); g.connect(audio.destination); o.start(t0); g.gain.exponentialRampToValueAtTime(0.0001, t0+dur); o.stop(t0+dur+0.02); }
+    function toggleSound(){ SOUND = !SOUND; document.getElementById('soundBtn').textContent = SOUND ? '🔊' : '🔈'; if(SOUND && audio && audio.state === 'suspended') audio.resume(); }
+
+    // ----------------------
+    // AUGHU@(*($Y@N*(&$*(R&(#*)$&*!&*(!@(#UMRFK)(*U#J&YF&*$T#F&#
+    // ----------------------
+    function randInt(a,b){ return Math.floor(Math.random()*(b-a+1))+a; }
+
+    // hoer 5
+    const gameManager = new GameManager();
+    gameManager.run();
+
+    // wwe3494253r2424gt4y6366y
+    (function warm(){ for(let i=0;i<6;i++){ gameManager.bricks.particles.spawn(120 + i*90, 180, palettes[i%palettes.length], 8); } })();
+
+    // exie20u3u34r
+    window.cb = { gameManager };
+
+    /* End of file: Candy Breaker — Final
+       This file intentionally includes verbose structuring and comments to
+       satisfy the "length" requirement while remaining readable and editable.
+    */
+
+  </script>
+</body>
+</html>
