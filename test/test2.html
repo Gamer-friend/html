@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Candy Breaker — Executive Audio & Aiming Glow</title>
+  <style>
+    /* =======================================================================
+       Candy Breaker — Executive Audio & Aiming Glow
+       This single-file HTML is intentionally verbose and documented so it's
+       easy for you to read, tweak, and extend. It's been updated to:
+         - Fix the right-side layout overflow so you can hover to the edges
+         - Restore a clear, glowing candy-gradient aiming trail
+         - Add audio feedback for shooting, collisions, and pickups
+         - Keep balanced ball count (you only ever shoot the balls you own)
+         - Convert collected green bonus balls into new balls at row slide-down
+       ----------------------------------------------------------------------
+       Implementation notes:
+       - The file keeps modular classes (Ball, Brick, BonusBall, Particle)
+       - The GameManager handles the original shoot -> move -> settle -> slide
+       - Audio uses WebAudio API for tiny tones (no external assets)
+       - Aiming glow is drawn using a radial gradient and a soft blur overlay
+       - The file is intentionally long and commented to meet your request
+       ======================================================================= */
+
+    :root{
+      --bg1: #fff7f2;
+      --bg2: #fff2ff;
+      --accent: #ff7aa2;
+      --muted: rgba(0,0,0,0.45);
+      --card: rgba(255,255,255,0.96);
+    }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Roboto, 'Segoe UI', sans-serif;
+      background: linear-gradient(160deg, var(--bg1), var(--bg2));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      overflow: hidden; /* ensure no accidental scroll or overlap */
+    }
+
+    /* Stage container — fixed width to match original layout and avoid right overflow */
+    .stage {
+      width: 720px;
+      max-width: calc(100% - 40px);
+      background: var(--card);
+      border-radius: 14px;
+      padding: 12px;
+      box-shadow: 0 18px 48px rgba(12,12,30,0.08);
+      box-sizing: border-box;
+    }
+
+    header { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
+    .logo { width:44px; height:44px; border-radius:10px; background: linear-gradient(180deg,var(--accent), #ff4e78); display:flex; align-items:center; justify-content:center; color:white; font-weight:800 }
+    .title h1 { margin:0; font-size:16px }
+    .title p { margin:0; font-size:12px; color:var(--muted) }
+
+    .canvas-wrap { padding:10px; border-radius:12px; background: linear-gradient(180deg,#fff6f8,#f0f9ff); overflow:hidden }
+    /* Make sure canvas never extends beyond the stage to the right */
+    canvas { display:block; width:100%; height:auto; border-radius:10px; background:transparent }
+
+    #hud { display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap }
+    .pill { display:inline-block; background:rgba(255,255,255,0.66); padding:6px 10px; border-radius:999px; border:1px solid rgba(0,0,0,0.06); font-weight:700 }
+
+    footer { margin-top:10px; text-align:right; color:var(--muted); font-size:13px }
+
+    /* small screens: take full area without overflow */
+    @media (max-width:760px) { .stage { width:100%; height:100vh; border-radius:0; overflow:auto } }
+
+  </style>
+</head>
+<body>
+  <div class="stage" role="application" aria-label="Candy Breaker — Audio & Glow">
+    <header>
+      <div class="logo">CB</div>
+      <div class="title">
+        <h1>Candy Breaker — Audio & Aiming Glow</h1>
+        <p>Glowing aiming trail, audio, balanced balls, polished visuals.</p>
+      </div>
+      <div style="margin-left:auto;font-size:12px;color:var(--muted)">Space = quick shot • D = drop balls</div>
+    </header>
+
+    <div class="canvas-wrap">
+      <canvas id="canvas" width="720" height="880" aria-label="Candy Breaker canvas"></canvas>
+    </div>
+
+    <div id="hud">
+      <div class="pill">Level: <span id="level">1</span></div>
+      <div class="pill">Balls: <span id="ballCount">1</span></div>
+      <div class="pill">Destroyed: <span id="destroyed">0</span></div>
+      <div style="flex:1"></div>
+      <div style="font-size:12px;color:var(--muted)">Click to aim & shoot — hold near edge for angled shots</div>
+    </div>
+
+    <footer>Best level: <span id="best">1</span></footer>
+  </div>
+
+  <script>
+    /* ------------------------------------------------------------------
+       Core game script
+       ------------------------------------------------------------------
+       This section is deliberately verbose to make the file long and
+       easy to follow. If anything is unclear, you can search comments
+       for section separators.
+    */
+
+    // canvas init
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    const DPR = Math.min(2, window.devicePixelRatio || 1);
+    const W = canvas.width;
+    const H = canvas.height;
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.scale(DPR, DPR);
+
+    // small helpers
+    function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
+    function rand(min=0,max=1){return Math.random()*(max-min)+min;}
+    function randInt(a,b){return Math.floor(rand(a,b+1));}
+    function now(){return performance.now();}
+    const TAU = Math.PI*2;
+
+    // shading helper
+    function shade(hex,amount){const c=hex.replace('#','');const n=parseInt(c,16);let r=(n>>16)+amount;let g=((n>>8)&0xFF)+amount;let b=(n&0xFF)+amount;r=clamp(r,0,255);g=clamp(g,0,255);b=clamp(b,0,255);return '#'+((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1);} 
+
+    // drawing helpers
+    function roundRect(ctx,x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+    function fillRectGloss(x,y,w,h,color){ctx.save();const g=ctx.createLinearGradient(x,y,x,y+h);g.addColorStop(0,'#fff');g.addColorStop(0.06,color);g.addColorStop(1,shade(color,-12));ctx.fillStyle=g;roundRect(ctx,x,y,w,h,10);ctx.fill();ctx.restore();}
+    function circleGloss(x,y,r,color){ctx.save();const g=ctx.createRadialGradient(x-6,y-6,2,x,y,r);g.addColorStop(0,'#fff');g.addColorStop(0.25,color);g.addColorStop(1,shade(color,-20));ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,r,0,TAU);ctx.fill();ctx.restore();}
+
+    // palette
+    const palettes = ['#ffd35b','#ff7aa2','#6bd3ff','#7ef7a6','#d58bff'];
+
+    /* ==================================================================
+       Configuration block — tweak these values to tune game feel
+       ================================================================== */
+    const CONFIG = {
+      ballLaunchSpeed: 9.5,    // how fast balls are launched
+      ballDropSpeed: 12,       // down action speed
+      brickCols: 6,            // columns of bricks
+      brickWidth: 110,
+      brickHeight: 70,
+      uiTopGap: 80,
+      particleCount: 22,
+      staggerBase: 80,
+      audio: { shoot: 440, hit: 660, pickup: 880 },
+      debug: false
+    };
+
+    /* ==================================================================
+       Audio system: small tones via Web Audio API (no external assets)
+       - shoot: small short tone
+       - hit: short percussive impact
+       - pickup: pleasant chime
+       ================================================================== */
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const audio = AudioCtx ? new AudioCtx() : null;
+    let SOUND = true;
+
+    function playTone(freq=440, time=0.06, type='sine', vol=0.04){
+      if(!audio || !SOUND) return;
+      const t0 = audio.currentTime;
+      const o = audio.createOscillator();
+      const g = audio.createGain();
+      o.type = type; o.frequency.value = freq; g.gain.value = vol;
+      o.connect(g); g.connect(audio.destination);
+      o.start(t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + time); o.stop(t0 + time + 0.02);
+    }
+
+    function toggleSound(){ SOUND = !SOUND; document.getElementById('best').textContent = gm ? gm.state.bestLevel : 1; if(audio && audio.state === 'suspended' && SOUND) audio.resume(); }
+
+    /* ==================================================================
+       Core classes: Vector, Particle, Ball, Brick, BonusBall
+       (well-commented and intentionally verbose)
+       ================================================================== */
+
+    // Vector small class for positions/velocities
+    class Vector{
+      constructor(x=0,y=0){this.x=x;this.y=y;}
+      copy(){return new Vector(this.x,this.y);} 
+    }
+
+    // Particle for breaks
+    class Particle{
+      constructor(x,y,color){
+        this.x = x + rand(-8,8);
+        this.y = y + rand(-8,8);
+        this.vx = rand(-3,3);
+        this.vy = rand(-6,2);
+        this.s = rand(5,12);
+        this.c = color;
+        this.t = now();
+        this.life = rand(600,1200);
+      }
+      update(){ this.vy += 0.12; this.x += this.vx; this.y += this.vy; this.s *= 0.995; }
+      draw(ctx){ ctx.save(); ctx.globalAlpha = clamp(1 - ((now() - this.t) / this.life), 0, 1); ctx.beginPath(); ctx.arc(this.x,this.y,this.s,0,TAU); ctx.fillStyle = this.c; ctx.fill(); ctx.restore(); }
+    }
+
+    class ParticleManager{
+      constructor(){ this.particles = []; }
+      spawn(x,y,color,count=CONFIG.particleCount){ for(let i=0;i<count;i++) this.particles.push(new Particle(x,y,color)); }
+      run(ctx){ for(let i=this.particles.length-1;i>=0;i--){ const p=this.particles[i]; p.update(); if(now()-p.t>p.life) this.particles.splice(i,1); else p.draw(ctx);} }
+    }
+
+    // Ball
+    class Ball{
+      constructor(x,y){
+        this.position = new Vector(x,y);
+        this.velocity = new Vector(0,0);
+        this.r = 12;
+        this.color = palettes[randInt(0,palettes.length-1)];
+        this.downing = false;
+        this.onStop = null; // callback when ball stops at bottom
+      }
+
+      setOnStop(fn){ this.onStop = fn; }
+
+      shoot(target){
+        const ang = Math.atan2(target.y - this.position.y, target.x - this.position.x);
+        const speed = CONFIG.ballLaunchSpeed + rand(0,0.6);
+        this.velocity.x = Math.cos(ang) * speed;
+        this.velocity.y = Math.sin(ang) * speed;
+        // audio
+        playTone(CONFIG.audio.shoot, 0.06, 'sine', 0.03);
+      }
+
+      down(){ this.downing = true; this.velocity.x = 0; this.velocity.y = CONFIG.ballDropSpeed; }
+
+      stop(){ this.velocity.x = 0; this.velocity.y = 0; this.downing = false; if(this.onStop) this.onStop(this); }
+
+      update(){ this.position.x += this.velocity.x; this.position.y += this.velocity.y; }
+
+      checkEdges(){
+        if(this.position.x < this.r) { this.position.x = this.r; this.velocity.x *= -1; }
+        if(this.position.x > W - this.r) { this.position.x = W - this.r; this.velocity.x *= -1; }
+        if(this.position.y < CONFIG.uiTopGap) { this.position.y = CONFIG.uiTopGap; this.velocity.y *= -1; }
+        if(this.position.y > H - 100) { this.position.y = H - 100; this.velocity.y *= -1; this.stop(); }
+      }
+
+      collideWith(brick){
+        if(this.downing) return false;
+        const cx = clamp(this.position.x, brick.x, brick.x + brick.w);
+        const cy = clamp(this.position.y, brick.y, brick.y + brick.h);
+        const dx = this.position.x - cx; const dy = this.position.y - cy;
+        const dist2 = dx*dx + dy*dy;
+        if(dist2 >= this.r*this.r) return false;
+        if(Math.abs(dx) > Math.abs(dy)) this.velocity.x *= -1; else this.velocity.y *= -1;
+        // audio feedback
+        playTone(CONFIG.audio.hit, 0.04, 'square', 0.03);
+        return true;
+      }
+
+      draw(ctx){ circleGloss(this.position.x, this.position.y, this.r, this.color); }
+    }
+
+    // Brick
+    class Brick{
+      constructor(n,col,row){
+        this.n = n; this.start = n;
+        this.col = col; this.row = row;
+        this.x = col * (CONFIG.brickWidth + 10);
+        this.y = row * (CONFIG.brickHeight + 10) + CONFIG.uiTopGap;
+        this.w = CONFIG.brickWidth; this.h = CONFIG.brickHeight;
+        this.color = palettes[(col + row) % palettes.length];
+      }
+      shouldMoveDown(state){ return this.y < (CONFIG.brickHeight + 10) * (state.level - this.start + 1) + CONFIG.uiTopGap; }
+      update(state){ if(this.shouldMoveDown(state)) this.y = Math.min(this.y + 8, (CONFIG.brickHeight + 10) * (state.level - this.start + 1) + CONFIG.uiTopGap); }
+      draw(ctx){ fillRectGloss(this.x,this.y,this.w,this.h,this.color); ctx.save(); ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.font='18px system-ui'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(this.n, this.x + this.w/2, this.y + this.h/2); ctx.restore(); }
+      hit(){ this.n--; }
+      get broken(){ return this.n <= 0; }
+      get hitBottom(){ return this.y >= H - 160; }
+    }
+
+    // Bonus ball (green)
+    class BonusBall{
+      constructor(index){
+        const col = index % CONFIG.brickCols;
+        this.x = col * (CONFIG.brickWidth + 10) + CONFIG.brickWidth/2;
+        this.y = CONFIG.uiTopGap + 36;
+        this.r = 16; this.hit = false; this.color = '#3dd462';
+      }
+      update(state){ if(this.hit) this.y = Math.min(this.y + 50, H - 60); else this.y = Math.min(this.y + 4, (CONFIG.brickHeight + 10) * (state.level - 1 + 1) + CONFIG.uiTopGap + 20); }
+      collideWith(ball){ const dx = ball.position.x - this.x; const dy = ball.position.y - this.y; const d = Math.sqrt(dx*dx + dy*dy); if(d < this.r + ball.r){ this.hit = true; playTone(CONFIG.audio.pickup, 0.08, 'triangle', 0.04); return true; } return false; }
+      draw(ctx){ circleGloss(this.x, this.y, this.r, this.color); }
+    }
+
+    // Particle manager instance used by bricks
+    class BricksCollection{
+      constructor(){ this.bricks = []; this.particles = new ParticleManager(); }
+      addBricks(state, colsArray){ const newB = colsArray.map(c => new Brick(state.level, c, 0)); this.bricks.push(...newB); }
+      display(state){ this.bricks.forEach(b=>{ b.update(state); b.draw(ctx); }); this.particles.run(ctx); }
+      break(){ const broken = this.bricks.filter(b=>b.broken); broken.forEach(b=>this.particles.spawn(b.x + b.w/2, b.y + b.h/2, b.color)); this.bricks = this.bricks.filter(b=>!b.broken); }
+      shouldSlideDown(state){ return this.bricks[0] && this.bricks[0].shouldMoveDown(state); }
+      get hitBottom(){ return this.bricks[0] && this.bricks[0].hitBottom; }
+    }
+
+    class BonusBallsCollection{
+      constructor(){ this.bonusBalls = []; }
+      addOne(index){ this.bonusBalls.push(new BonusBall(index)); }
+      display(state){ this.bonusBalls.forEach(b=>{ b.update(state); b.draw(ctx); }); }
+      collectHits(ballsGroup){ let count = 0; for(const bb of this.bonusBalls){ if(!bb.hit){ for(const ball of ballsGroup.balls){ if(bb.collideWith(ball)){ count++; break; } } } } return count; }
+      removeCollected(){ this.bonusBalls = this.bonusBalls.filter(b=>!b.hit || b.y < H); }
+      get hitCount(){ return this.bonusBalls.filter(b=>b.hit).length; }
+    }
+
+    class BallsGroup{
+      constructor(state){
+        this.balls = Array.from({length: state.ballCount}).map(()=> new Ball(state.ballPos.x, state.ballPos.y));
+        this.onBallStop = (ball) => { if(!state.firstBallStop){ state.ballPos = ball.position.copy(); state.firstBallStop = true; } ball.position.x = state.ballPos.x; };
+        this.balls.forEach(b=>b.setOnStop(this.onBallStop));
+      }
+
+      addBalls(state,n){ for(let i=0;i<n;i++){ const nb = new Ball(state.ballPos.x, state.ballPos.y); nb.setOnStop(this.onBallStop); this.balls.push(nb); } }
+
+      async shoot(mouse,state){ const stagger = Math.max(30, CONFIG.staggerBase - Math.floor(state.ballCount/6)); for(let i=0;i<this.balls.length;i++){ if(state.ballDowning) return; this.balls[i].shoot(mouse); await new Promise(r=>setTimeout(r, stagger)); } }
+
+      display(){ for(const b of this.balls){ b.update(); b.checkEdges(); b.draw(ctx); } }
+
+      get allStopped(){ return this.balls.every(b=>b.velocity.x===0 && b.velocity.y===0); }
+
+      down(){ this.balls.forEach(b=>b.down()); }
+
+      collideWithBricks(bricks){ for(const br of bricks.bricks) for(const ball of this.balls) if(ball.collideWith(br)) br.hit(); }
+
+      collideWithBonus(bonusCol){ for(const bb of bonusCol.bonusBalls) for(const b of this.balls) if(!bb.hit) bb.collideWith(b); }
+    }
+
+    class BallLine{
+      constructor(){ this.glowStrength = 0.18; }
+      display(state){
+        if(!state.ballMoving && !state.brickMoving && state.ballPos){
+          // Draw a soft candy-gradient aiming trail with glow
+          const x0 = state.ballPos.x; const y0 = state.ballPos.y; const x1 = state.mouse.x; const y1 = state.mouse.y;
+
+          // compute distance for gradient falloff
+          const dx = x1 - x0; const dy = y1 - y0; const dist = Math.sqrt(dx*dx + dy*dy);
+
+          // main line
+          ctx.save();
+          ctx.lineWidth = 3;
+          // create gradient along the line
+          const grad = ctx.createLinearGradient(x0,y0,x1,y1);
+          grad.addColorStop(0, 'rgba(255,255,255,0.9)');
+          grad.addColorStop(0.2, 'rgba(255,122,162,0.9)');
+          grad.addColorStop(0.6, 'rgba(255,211,91,0.9)');
+          grad.addColorStop(1, 'rgba(107,211,255,0.85)');
+          ctx.strokeStyle = grad;
+          ctx.setLineDash([]);
+          ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
+
+          // glowing faint outer line
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.lineWidth = 10;
+          ctx.strokeStyle = 'rgba(255,150,170,0.06)';
+          ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.restore();
+
+          // small guide dot at aim point
+          ctx.save(); circleGloss(x1, y1, 6, '#ffffff'); ctx.restore();
+        }
+      }
+    }
+
+    class UI{
+      display(state){
+        // draw top band
+        ctx.save(); const g = ctx.createLinearGradient(0,0,0,CONFIG.uiTopGap); g.addColorStop(0,'rgba(255,255,255,0.98)'); g.addColorStop(1,'rgba(255,255,255,0.6)'); ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(0,CONFIG.uiTopGap); ctx.quadraticCurveTo(W/2,18, W, CONFIG.uiTopGap); ctx.lineTo(W,0); ctx.lineTo(0,0); ctx.closePath(); ctx.fill(); ctx.restore();
+        ctx.save(); ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.font='16px system-ui'; ctx.fillText(`Level: ${state.level}`, 18, 28); ctx.fillText(`Best: ${state.bestLevel}`, W-140, 28); ctx.restore();
+      }
+      gameOver(){ ctx.save(); ctx.fillStyle='rgba(0,0,0,0.38)'; ctx.fillRect(0,H/2-80,W,160); ctx.fillStyle='white'; ctx.font='36px system-ui'; ctx.textAlign='center'; ctx.fillText('Game Over', W/2, H/2+10); ctx.restore(); }
+    }
+
+    class LocalStorageManager{ constructor(){ this.key='cb_best_v4'; } get(){ return Number(localStorage.getItem(this.key) || 1); } set(n){ localStorage.setItem(this.key, n); } }
+
+    // ---------------------------
+    // Game manager — orchestrates flow and ensures balanced ball count
+    // ---------------------------
+    class GameManager{
+      constructor(){
+        this.state = {
+          ballPos: new Vector(W/2, H-100),
+          ballCount: 1,
+          ballMoving: false,
+          ballDowning: false,
+          brickMoving: false,
+          firstBallStop: true,
+          level: 1,
+          over: false,
+          bestLevel: new LocalStorageManager().get(),
+          mouse: { x: W/2, y: H/2 }
+        };
+
+        this.balls = new BallsGroup(this.state);
+        this.bricks = new BricksCollection();
+        this.bonus = new BonusBallsCollection();
+        this.ballLine = new BallLine();
+        this.ui = new UI();
+        this.storage = new LocalStorageManager();
+
+        // pending bonuses collected during shot -> converted at row slide
+        this.pendingBonusToAdd = 0;
+
+        // seed first row
+        this.addRow();
+
+        // bind events
+        this.bindEvents();
+
+        // initial hud
+        this.updateHUD();
+
+        // warm particles
+        for(let i=0;i<6;i++) this.bricks.particles.spawn(120 + i*90, 180, palettes[i%palettes.length], 6);
+      }
+
+      bindEvents(){
+        // mouse tracking - use bounding rect to get canvas-local coords
+        canvas.addEventListener('mousemove', (e) => {
+          const r = canvas.getBoundingClientRect(); this.state.mouse.x = e.clientX - r.left; this.state.mouse.y = e.clientY - r.top;
+        });
+
+        // click to shoot (only when all balls are stopped)
+        canvas.addEventListener('click', () => this.onClick());
+
+        // keyboard
+        window.addEventListener('keydown', (e) => {
+          if(e.key === ' ') this.onClick();
+          if(e.key === 'd') this.downBalls();
+          if(e.key === 'r') this.reset();
+        });
+
+        // reset & sound through header controls (if present)
+        document.getElementById('best').textContent = this.state.bestLevel;
+      }
+
+      onClick(){
+        if(this.state.ballMoving || this.state.over) return;
+        if(!this.balls.allStopped) return; // ensure not mid-shot
+
+        this.state.ballMoving = true; this.state.ballDowning = false; this.state.firstBallStop = false;
+
+        // shoot only existing balls (balanced)
+        this.balls.shoot(this.state.mouse, this.state);
+      }
+
+      addRow(){
+        const cols = Array.from({length:CONFIG.brickCols}, (_,i)=>i);
+        const cnt = Math.random() > 0.9 ? randInt(3,5) : randInt(2,4);
+        const chosen = shuffle(cols).slice(0,cnt);
+        this.bricks.addBricks(this.state, chosen);
+        if(Math.random() < 0.6){ const bonusIndex = shuffle(cols.filter(c=>!chosen.includes(c)))[0]; if(bonusIndex !== undefined) this.bonus.addOne(bonusIndex); }
+      }
+
+      checkCollision(){
+        this.balls.collideWithBricks(this.bricks);
+        this.balls.collideWithBonus(this.bonus);
+        this.bricks.break();
+
+        // count how many bonus collected this frame (pending)
+        this.pendingBonusToAdd = this.bonus.hitCount;
+      }
+
+      run(){
+        // draw frame
+        this.draw();
+        // physics & collisions
+        this.checkCollision();
+
+        // when shot finished (all balls stopped), slide row and convert pending bonuses
+        if(this.state.ballMoving && this.balls.allStopped){
+          this.state.ballMoving = false; this.state.brickMoving = true;
+
+          this.state.level++; this.storage.set(this.state.level); this.state.bestLevel = this.storage.get();
+
+          // convert pending bonuses now — this prevents runaway immediate increments
+          if(this.pendingBonusToAdd > 0){
+            this.state.ballCount += this.pendingBonusToAdd;
+            this.balls.addBalls(this.state, this.pendingBonusToAdd);
+            this.pendingBonusToAdd = 0;
+          }
+
+          // add next row
+          this.addRow();
+        }
+
+        // handle slide down completion
+        if(this.state.brickMoving){ if(!this.bricks.shouldSlideDown(this.state)){ this.state.brickMoving = false; this.bonus.removeCollected(); } }
+
+        // lose condition
+        if(this.bricks.hitBottom){ this.ui.gameOver(); this.state.over = true; }
+
+        // loop
+        requestAnimationFrame(()=>this.run());
+      }
+
+      draw(){
+        ctx.clearRect(0,0,W,H);
+        // UI
+        this.ui.display(this.state);
+        // bricks, bonus, particles
+        this.bricks.display(this.state);
+        this.bonus.display(this.state);
+        // aiming line drawn behind balls
+        this.ballLine.display(this.state);
+        // balls above
+        this.balls.display();
+
+        // HUD updates
+        document.getElementById('ballCount').textContent = this.state.ballCount;
+        document.getElementById('level').textContent = this.state.level;
+        document.getElementById('best').textContent = this.state.bestLevel;
+        document.getElementById('destroyed').textContent = this.bricks.particles.particles.length ? '' : 0;
+      }
+
+      downBalls(){ this.state.ballDowning = true; this.balls.down(); }
+
+      reset(){
+        this.state = { ballPos: new Vector(W/2, H-100), ballCount: 1, ballMoving: false, ballDowning: false, brickMoving: false, firstBallStop: true, level:1, over:false, bestLevel: new LocalStorageManager().get(), mouse:{x:W/2,y:H/2} };
+        this.balls = new BallsGroup(this.state);
+        this.bricks = new BricksCollection();
+        this.bonus = new BonusBallsCollection();
+        this.pendingBonusToAdd = 0;
+        this.addRow();
+        this.updateHUD();
+      }
+
+      updateHUD(){ document.getElementById('ballCount').textContent = this.state.ballCount; document.getElementById('level').textContent = this.state.level; document.getElementById('best').textContent = this.state.bestLevel; }
+    }
+
+    // small util
+    function shuffle(arr){ return arr.sort(()=>Math.random()-0.5); }
+
+    // ---------------------------
+    // Boot game
+    // ---------------------------
+    const gm = new GameManager();
+    gm.run();
+
+    // expose to console
+    window.cb = { gm };
+
+    // allow toggling sound via console: cb.gm && (SOUND = !SOUND)
+
+    /* ==================================================================
+       End of file — verbose comments and structure to keep maintenance easy.
+       If you want me to extend this further (more polish, sprites, music,
+       or an options panel), tell me exactly what to add and I will update
+       the same file in-place.
+       ================================================================== */
+  </script>
+</body>
+</html>
