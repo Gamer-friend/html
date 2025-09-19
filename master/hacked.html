@@ -1,0 +1,912 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Heheheehhehe</title>
+<style>
+  html,body {
+    height:100%;
+    margin:0;
+    background:#0b1020;
+    color:#fff;
+    font-family: Inter, Arial, sans-serif;
+    -webkit-font-smoothing:antialiased;
+    -moz-osx-font-smoothing:grayscale;
+    overflow:hidden;
+  }
+
+  #gameCanvas {
+    display:block;
+    background: linear-gradient(180deg, #0f1724 0%, #07101a 100%);
+    width:100vw;
+    height:100vh;
+  }
+
+  #ui {
+    position: absolute;
+    left: 12px;
+    top: 12px;
+    z-index: 10;
+    display:flex;
+    gap:10px;
+    align-items:center;
+  }
+
+  .pill {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.06);
+    padding:8px 12px;
+    border-radius:999px;
+    font-size:14px;
+    color:#e6eef8;
+    display:flex;
+    gap:8px;
+    align-items:center;
+  }
+
+  #lifeBtn {
+    background: linear-gradient(0deg, #0f9ea0, #63e3df);
+    color:#012426;
+    border:none;
+    padding:8px 12px;
+    border-radius:8px;
+    font-weight:700;
+    cursor:pointer;
+  }
+  #lifeBtn[disabled] {
+    opacity:0.4;
+    cursor:default;
+    filter:grayscale(0.6);
+  }
+
+  #dropBtn {
+    background: rgba(255,255,255,0.06);
+    border:1px solid rgba(255,255,255,0.06);
+    padding:8px 12px;
+    border-radius:8px;
+    color:#e6eef8;
+    cursor:pointer;
+  }
+
+  #help {
+    position: absolute;
+    right: 12px;
+    top: 12px;
+    z-index:10;
+    color: rgba(230,238,248,0.9);
+    font-size:13px;
+    background: rgba(255,255,255,0.03);
+    padding:10px 12px;
+    border-radius:8px;
+    border:1px solid rgba(255,255,255,0.03);
+  }
+
+  canvas { outline:none; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+
+<div id="ui">
+  <div class="pill" id="scorePill">Level: 1</div>
+  <div class="pill" id="ballPill">Balls: 400</div>
+  <div class="pill" id="bestPill">Best: 1</div>
+  <button id="lifeBtn">Use Life Saver (1)</button>
+  <button id="dropBtn">Drop Balls</button>
+</div>
+
+<div id="help">
+  Aim with mouse. Click anywhere to shoot. Green balls are yours. <br>
+  Red bricks labeled <strong>SHANE</strong> destroy any ball that touches them.
+</div>
+
+<script>
+/* ===========
+   CONFIG
+   =========== */
+const INITIAL_BALL_COUNT = 400; // start with 400 balls as before
+const POWER = 0.32;            // shot power
+const UI_TOP = 84;             // reserved UI top offset (pixels)
+const BOTTOM_SAFE_ZONE = 100;  // where balls stop and return
+const BALL_MASS = 2;
+const BALL_RADIUS = BALL_MASS * 8;
+const TARGET_BRICK_W = 120;    // design target width (actual computed per screen)
+const TARGET_BRICK_H = 80;     // design target height (actual computed per screen)
+const BRICK_GAP = 8;           // gap between bricks
+const MAX_DEAD_BRICKS_PER_LEVEL = 3; // keep dead bricks few
+/* =========== END CONFIG =========== */
+
+/* Basic utilities */
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function between(v, a, b) { return a <= v && v <= b; }
+function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+function range(n) { return Array.from({length:n}, (_,i)=>i); }
+function delay(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+/* Canvas setup */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d', { alpha:false });
+
+let W = window.innerWidth;
+let H = window.innerHeight;
+canvas.width = W;
+canvas.height = H;
+
+/* responsive resizing */
+window.addEventListener('resize', () => {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W;
+  canvas.height = H;
+  game.onResize();
+});
+
+/* mouse */
+const Mouse = { x: W/2, y: H - BOTTOM_SAFE_ZONE };
+window.addEventListener('mousemove', (e) => {
+  Mouse.x = e.clientX;
+  Mouse.y = e.clientY;
+});
+window.addEventListener('touchmove', (e) => {
+  const t = e.touches[0];
+  if (t) { Mouse.x = t.clientX; Mouse.y = t.clientY; }
+}, {passive:true});
+
+/* UI elements */
+const scorePill = document.getElementById('scorePill');
+const ballPill = document.getElementById('ballPill');
+const bestPill = document.getElementById('bestPill');
+const lifeBtn = document.getElementById('lifeBtn');
+const dropBtn = document.getElementById('dropBtn');
+
+lifeBtn.addEventListener('click', () => {
+  game.useLifeSaver();
+});
+dropBtn.addEventListener('click', () => {
+  game.downBalls();
+});
+
+/* ===========
+   Vector class
+   =========== */
+class Vec {
+  constructor(x=0,y=0){ this.x = x; this.y = y; }
+  add(v){ this.x += v.x; this.y += v.y; return this; }
+  sub(v){ this.x -= v.x; this.y -= v.y; return this; }
+  mult(n){ this.x *= n; this.y *= n; return this; }
+  mag(){ return Math.sqrt(this.x*this.x + this.y*this.y); }
+  copy(){ return new Vec(this.x, this.y); }
+  normalize(){ const m = this.mag()||1; this.x/=m; this.y/=m; return this; }
+  static mult(v,n){ return new Vec(v.x*n, v.y*n); }
+  static div(v,n){ return new Vec(v.x/n, v.y/n); }
+}
+
+/* ===========
+   Drawing helpers (pseudo-3D bricks)
+   =========== */
+function clearScreen(){
+  ctx.clearRect(0,0,W,H);
+}
+function drawLine(x1,y1,x2,y2,color='#000',w=2){
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = w;
+  ctx.moveTo(x1,y1);
+  ctx.lineTo(x2,y2);
+  ctx.stroke();
+}
+function drawRoundedRect(x,y,w,h,r=6, fillStyle='#fff', strokeStyle=null){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+  if(fillStyle){ ctx.fillStyle = fillStyle; ctx.fill(); }
+  if(strokeStyle){ ctx.strokeStyle = strokeStyle; ctx.stroke(); }
+}
+
+/* 3D brick: draw using gradient and highlight */
+function draw3DBrick(x,y,w,h,baseColor,options={}){
+  const radius = Math.min(12, Math.floor(h/6));
+  // base gradient
+  const g = ctx.createLinearGradient(x,y,x,y+h);
+  g.addColorStop(0, lighten(baseColor, 0.12));
+  g.addColorStop(0.6, baseColor);
+  g.addColorStop(1, darken(baseColor, 0.12));
+  ctx.fillStyle = g;
+  // main rounded rect
+  drawRoundedRect(x, y, w, h, radius, g, null);
+
+  // top highlight
+  ctx.beginPath();
+  ctx.rect(x+2, y+2, w-4, Math.max(4, Math.floor(h*0.12)));
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  ctx.fill();
+
+  // inner shadow (bottom)
+  ctx.beginPath();
+  ctx.rect(x+2, y+h - Math.max(6, Math.floor(h*0.12)), w-4, Math.max(6, Math.floor(h*0.12)));
+  ctx.fillStyle = 'rgba(0,0,0,0.06)';
+  ctx.fill();
+
+  // slight border
+  ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // optional text (for SHANE bricks)
+  if(options.text){
+    ctx.fillStyle = options.textColor || '#fff';
+    ctx.font = `${Math.max(10, Math.floor(h*0.28))}px bold  Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(options.text, x + w/2, y + h/2);
+  }
+}
+
+function lighten(hex, amt){
+  const c = hexToRgb(hex);
+  return `rgb(${clamp(Math.round(c.r + 255*amt),0,255)},${clamp(Math.round(c.g + 255*amt),0,255)},${clamp(Math.round(c.b + 255*amt),0,255)})`;
+}
+function darken(hex, amt){
+  const c = hexToRgb(hex);
+  return `rgb(${clamp(Math.round(c.r - 255*amt),0,255)},${clamp(Math.round(c.g - 255*amt),0,255)},${clamp(Math.round(c.b - 255*amt),0,255)})`;
+}
+function hexToRgb(hex){
+  const h = hex.replace('#','');
+  const bigint = parseInt(h,16);
+  if(h.length===6) {
+    return { r:(bigint>>16)&255, g:(bigint>>8)&255, b:bigint&255 };
+  } else {
+    return { r:0,g:0,b:0 };
+  }
+}
+
+/* ===========
+   Game entity classes
+   =========== */
+
+class Ball {
+  constructor(x,y,mass=BALL_MASS){
+    this.position = new Vec(x,y);
+    this.velocity = new Vec(0,0);
+    this.acceleration = new Vec(0,0);
+    this.mass = mass;
+    this.r = mass * 8;
+    this.downing = false;
+    this.removed = false; // set true when destroyed by dead-brick
+    this.showDirection = true;
+    this.onStop = ()=>{};
+  }
+
+  applyForce(force){
+    const f = Vec.div(force, this.mass);
+    this.acceleration.add(f);
+  }
+
+  update(){
+    this.velocity.add(this.acceleration);
+    this.position.add(this.velocity);
+    // small linear friction
+    this.velocity.mult(0.999);
+    this.acceleration.mult(0);
+  }
+
+  shoot(mousePos){
+    this.showDirection = false;
+    const angle = Math.atan2(mousePos.y - this.position.y, mousePos.x - this.position.x);
+    const force = new Vec(Math.cos(angle)*100*POWER, Math.sin(angle)*100*POWER);
+    this.applyForce(force);
+  }
+
+  down(){
+    this.downing = true;
+    this.velocity = new Vec(0,30);
+  }
+
+  stop(){
+    this.velocity = new Vec(0,0);
+    this.showDirection = true;
+    this.onStop(this);
+    this.downing = false;
+  }
+
+  checkEdges(){
+    // left/right bounce
+    if(this.position.x < 0){
+      this.position.x = 0; this.velocity.x *= -1;
+    } else if(this.position.x > W){
+      this.position.x = W; this.velocity.x *= -1;
+    }
+    // top bounce
+    if(this.position.y < UI_TOP + 4){
+      this.position.y = UI_TOP + 4;
+      this.velocity.y *= -1;
+    }
+    // bottom
+    if(this.position.y > H - BOTTOM_SAFE_ZONE){
+      this.position.y = H - BOTTOM_SAFE_ZONE;
+      this.velocity.y *= -1;
+      this.stop();
+    }
+  }
+
+  render(){
+    // simple ball
+    const grd = ctx.createRadialGradient(this.position.x - this.r*0.4, this.position.y - this.r*0.5, 1, this.position.x, this.position.y, this.r);
+    grd.addColorStop(0, '#ffffff');
+    grd.addColorStop(0.4, '#9fd7ff');
+    grd.addColorStop(1, '#3aa1e6');
+    ctx.beginPath();
+    ctx.fillStyle = grd;
+    ctx.arc(this.position.x, this.position.y, this.r, 0, Math.PI*2);
+    ctx.fill();
+    ctx.closePath();
+
+    // stroke
+    ctx.beginPath();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+    ctx.arc(this.position.x, this.position.y, this.r, 0, Math.PI*2);
+    ctx.stroke();
+    ctx.closePath();
+  }
+
+  // simple bounding-circle to rect collision
+  collideWithRect(rect){
+    if(this.downing) return false;
+    const x = this.position.x;
+    const y = this.position.y;
+    const r = this.r;
+    const closestX = clamp(x, rect.x, rect.x + rect.w);
+    const closestY = clamp(y, rect.y, rect.y + rect.h);
+    const dx = x - closestX;
+    const dy = y - closestY;
+    const collided = (dx*dx + dy*dy) < r*r;
+    if(!collided) return false;
+
+    // determine collision side and reflect velocity
+    // prefer Y reflection if nearest to top/bottom
+    if (closestY === rect.y && between(closestX, rect.x - r + 3, rect.x + rect.w + r - 3)) {
+      // top
+      this.velocity.y = -Math.abs(this.velocity.y || -6);
+      this.position.y = closestY - r - 0.1;
+    } else if (closestY === rect.y + rect.h && between(closestX, rect.x - r + 3, rect.x + rect.w + r - 3)) {
+      // bottom
+      this.velocity.y = Math.abs(this.velocity.y || 6);
+      this.position.y = closestY + r + 0.1;
+    } else if (closestX === rect.x && between(closestY, rect.y - r + 3, rect.y + rect.h + r - 3)) {
+      // left
+      this.velocity.x = -Math.abs(this.velocity.x || -6);
+      this.position.x = closestX - r - 0.1;
+    } else if (closestX === rect.x + rect.w && between(closestY, rect.y - r + 3, rect.y + rect.h + r - 3)) {
+      // right
+      this.velocity.x = Math.abs(this.velocity.x || 6);
+      this.position.x = closestX + r + 0.1;
+    } else {
+      // fallback: invert both
+      this.velocity.x *= -1;
+      this.velocity.y *= -1;
+    }
+    return true;
+  }
+}
+
+/* Brick class (normal & dead) */
+class Brick {
+  constructor(level, col, row, w, h, options={}){
+    this.level = level; // starting "health"
+    this.n = level;
+    this.col = col; this.row = row;
+    this.w = w; this.h = h;
+    this.x = col * (w + BRICK_GAP);
+    this.y = UI_TOP + row * (h + BRICK_GAP);
+    this.dead = options.dead || false; // 'dead' bricks cannot be hit; destroy balls
+    this.text = options.text || null;
+    this.baseColor = options.color || '#f1c40f';
+  }
+  get broken(){ return this.n <= 0 && !this.dead; } // dead bricks never "break"
+  hit(){
+    if(this.dead) return; // can't be damaged
+    this.n--;
+  }
+  render(){
+    // choose color based on health
+    if(this.dead){
+      draw3DBrick(this.x, this.y, this.w, this.h, '#c82a2a', { text: 'SHANE', textColor:'#fff' });
+    } else {
+      // normal bricks color gradient by n relative to level
+      const percent = Math.max(0, Math.min(1, (this.level - this.n)/Math.max(1,this.level)));
+      // color shift across hue
+      const base = this.baseColor;
+      draw3DBrick(this.x, this.y, this.w, this.h, base, { text: this.n > 0 ? String(this.n) : '' , textColor: '#000' });
+    }
+  }
+
+  hitBottom(totalRows){
+    // if any brick reaches close to bottom reserved area, game over
+    return (this.y + this.h) >= (H - BOTTOM_SAFE_ZONE - 10);
+  }
+}
+
+/* Bricks manager: full-screen grid width across columns; rows are added per level */
+class BrickManager {
+  constructor(){
+    this.bricks = [];
+    this.cols = 0;
+    this.rows = 0;
+    this.brickW = 0;
+    this.brickH = 0;
+    this.calculateGrid();
+  }
+
+  onResize(){
+    this.calculateGrid();
+    // reposition existing bricks to new sizes
+    this.bricks.forEach(b => {
+      b.w = this.brickW; b.h = this.brickH;
+      b.x = b.col * (b.w + BRICK_GAP);
+      b.y = UI_TOP + b.row * (b.h + BRICK_GAP);
+    });
+  }
+
+  calculateGrid(){
+    // compute columns that fit given target brick width
+    const availableW = Math.max(320, W - 20);
+    const approxCols = Math.max(3, Math.floor(availableW / (TARGET_BRICK_W)));
+    this.cols = approxCols;
+    // recompute sizes to fill screen width
+    const totalGapW = BRICK_GAP*(this.cols - 1);
+    this.brickW = (availableW - totalGapW)/this.cols;
+    // pick rows to cover the vertical area above the ball safe zone
+    const availableH = Math.max(320, H - UI_TOP - BOTTOM_SAFE_ZONE - 40);
+    const approxRows = Math.max(2, Math.floor(availableH / TARGET_BRICK_H));
+    this.rows = approxRows + 1; // allow a bit extra
+    const totalGapH = BRICK_GAP*(this.rows - 1);
+    this.brickH = (availableH - totalGapH)/this.rows;
+    // ensure minimums
+    this.brickW = Math.max(48, this.brickW);
+    this.brickH = Math.max(36, this.brickH);
+  }
+
+  // add a top-row of bricks for the new level; place 'dead' bricks sparsely
+  addRowForLevel(level){
+    // decide how many bricks to place in the row: randomly leave some empty gaps
+    const fillProbability = 0.72; // ~72% bricks present
+    const deadCount = Math.min(MAX_DEAD_BRICKS_PER_LEVEL, Math.max(1, Math.floor(this.cols * 0.06)));
+    // pick dead brick positions randomly but not too many
+    const possibleCols = range(this.cols);
+    // shuffle
+    for(let i=possibleCols.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); [possibleCols[i],possibleCols[j]]=[possibleCols[j],possibleCols[i]]; }
+    const deadPositions = possibleCols.slice(0, deadCount);
+
+    // create bricks across columns at row=0 and push others down (we simulate rows by increasing row index)
+    // Instead of literally pushing many bricks down, we will add new row with row=0 and keep row index consistent across levels.
+    // For easier handling, we create bricks with row = 0 and the manager keeps track of absolute placement via increasing row numbers when adding more rows later.
+    const newBricks = [];
+    for(let c=0;c<this.cols;c++){
+      if(Math.random() > fillProbability) continue; // empty gap
+      const isDead = deadPositions.includes(c) && Math.random() < 0.9; // 90% chance the chosen dead pos stays dead
+      const opts = {};
+      if(isDead){
+        opts.dead = true;
+        opts.text = 'SHANE';
+        opts.color = '#c82a2a';
+      } else {
+        // pick a pleasant color for normal bricks (by hue rotation)
+        const hue = 30 + ((level*7 + c*13) % 300);
+        opts.color = hslToHex(hue, 75, 60);
+      }
+      // place brick at row = 0 but with level indicator stored in the brick
+      const b = new Brick(level, c, 0, this.brickW, this.brickH, opts);
+      newBricks.push(b);
+    }
+
+    // shift existing bricks downward by increasing their row index
+    this.bricks.forEach(b => { b.row += 1; b.y = UI_TOP + b.row*(b.h + BRICK_GAP); });
+    // now add new row bricks at row 0
+    newBricks.forEach(b => {
+      b.row = 0;
+      b.x = b.col * (b.w + BRICK_GAP);
+      b.y = UI_TOP + b.row * (b.h + BRICK_GAP);
+      this.bricks.push(b);
+    });
+
+    // remove bricks that receded beyond some rows limit if desired (we let them pile down until they hit bottom)
+  }
+
+  render(){
+    // draw all bricks
+    this.bricks.forEach(b => {
+      b.render();
+    });
+  }
+
+  removeBroken(){
+    // remove broken bricks (normal ones that reached n<=0). Dead bricks are never removed by hits.
+    this.bricks = this.bricks.filter(b => !b.broken);
+  }
+
+  shouldSlideDown(){
+    // check if any brick needs to slide down visually (not required here)
+    return false;
+  }
+
+  hitBottom(){
+    // if any brick reaches bottom reserved area, game over
+    return this.bricks.some(b => b.hitBottom());
+  }
+
+  // find bricks that collide with a ball; return array of {brick,hitType}
+  checkCollisionsWithBall(ball){
+    for(const b of this.bricks){
+      // bounding check quick
+      if(ball.position.x + ball.r < b.x || ball.position.x - ball.r > b.x + b.w) continue;
+      if(ball.position.y + ball.r < b.y || ball.position.y - ball.r > b.y + b.h) continue;
+      // perform precise collision and respond via ball.collideWithRect
+      const collided = ball.collideWithRect(b);
+      if(collided) return b;
+    }
+    return null;
+  }
+}
+
+/* ===========
+   Balls manager
+   =========== */
+class Balls {
+  constructor(state){
+    this.state = state;
+    this.balls = [];
+    this.onBallStop = (ball) => {
+      if(!state.firstBallStop){
+        state.ballPos = ball.position.copy();
+        state.firstBallStop = true;
+      }
+      ball.position.x = state.ballPos.x; // align x
+    };
+    this.spawnInitial(state.ballCount);
+  }
+
+  spawnInitial(n){
+    this.balls = range(n).map(i => {
+      const b = new Ball(this.state.ballPos.x, this.state.ballPos.y, BALL_MASS);
+      b.onStop = this.onBallStop;
+      return b;
+    });
+  }
+
+  addBalls(n){
+    const newB = range(n).map(i=>{
+      const b = new Ball(this.state.ballPos.x, this.state.ballPos.y, BALL_MASS);
+      b.onStop = this.onBallStop;
+      return b;
+    });
+    this.balls.push(...newB);
+  }
+
+  removeBallInstance(ball){
+    // remove by marking removed flag and filter later
+    ball.removed = true;
+  }
+
+  get allStopped(){
+    return this.balls.filter(b=>!b.removed).every(b => b.velocity.mag() === 0);
+  }
+
+  async shoot(mousePos, state){
+    // shoot each ball staggered
+    for(const ball of this.balls){
+      if(state.ballDowning) return;
+      if(ball.removed) continue;
+      ball.shoot(mousePos);
+      await delay(Math.max(10, 50 - Math.floor(state.ballCount / 10)));
+    }
+  }
+
+  down(){
+    this.balls.forEach(b => { if(!b.removed) b.down(); });
+  }
+
+  render(){
+    this.balls.forEach(b=>{
+      if(b.removed) return;
+      b.update();
+      b.checkEdges();
+      b.render();
+    });
+  }
+
+  cleanupRemoved(){
+    // permanently remove balls flagged as removed
+    const removedCount = this.balls.filter(b=>b.removed).length;
+    this.balls = this.balls.filter(b=>!b.removed);
+    return removedCount;
+  }
+}
+
+/* ===========
+   Storage for best level
+   =========== */
+class LocalStorageManager {
+  constructor(){
+    this.key = 'brickBestScore';
+    try { this.storage = window.localStorage; } catch(e) { this.storage = null; }
+  }
+  getBest(){ return parseInt(this.storage?.getItem(this.key) || '1', 10); }
+  setBest(v){ if(this.storage) this.storage.setItem(this.key, String(v)); }
+}
+
+/* ===========
+   Game Manager
+   =========== */
+class Game {
+  constructor(){
+    this.state = {
+      ballPos: new Vec(W/2, H - BOTTOM_SAFE_ZONE),
+      ballMoving: false,
+      ballCount: INITIAL_BALL_COUNT,
+      ballDowning: false,
+      brickMoving: false,
+      firstBallStop: true,
+      level: 1,
+      over: false,
+      lifeSaverAvailable: true,
+      lostBallsDueToDeadBricks: 0
+    };
+
+    this.storage = new LocalStorageManager();
+    this.state.bestLevel = this.storage.getBest();
+
+    // brick manager calculates columns/rows based on screen
+    this.bricks = new BrickManager();
+    this.balls = new Balls(this.state);
+    this.animateBound = this.loop.bind(this);
+
+    // initial row(s)
+    for(let i=0;i<1;i++) this.bricks.addRowForLevel(this.state.level);
+
+    // input
+    canvas.addEventListener('click', (e)=>{ this.onCanvasClick(e); });
+    window.addEventListener('keydown', (e)=>{
+      if(e.key === ' '){ // space to drop balls
+        this.downBalls();
+      }
+      if(e.key === 'l' || e.key === 'L'){ this.useLifeSaver(); }
+    });
+
+    this.run();
+  }
+
+  onResize(){
+    // when canvas size changes, recalc bricks and reposition balls origin
+    this.bricks.onResize();
+    this.state.ballPos = new Vec(W/2, H - BOTTOM_SAFE_ZONE);
+    // adjust existing balls' positions to new coords if stopped
+    this.balls.balls.forEach(b=>{
+      if(b.velocity.mag() === 0 && !b.removed) b.position.y = H - BOTTOM_SAFE_ZONE;
+    });
+  }
+
+  onCanvasClick(e){
+    if(this.state.ballMoving || this.state.brickMoving || this.state.over) return;
+    // start shoot
+    this.state.ballPos = null;
+    this.state.ballMoving = true;
+    this.state.ballDowning = false;
+    this.state.firstBallStop = false;
+    const mousePos = { x: Mouse.x, y: Math.min(Mouse.y, H - 200) };
+    this.balls.shoot(mousePos, this.state);
+  }
+
+  checkCollisions(){
+    // for each active ball check collision with bricks
+    for(const ball of this.balls.balls){
+      if(ball.removed) continue;
+      const collidedBrick = this.bricks.checkCollisionsWithBall(ball);
+      if(collidedBrick){
+        if(collidedBrick.dead){
+          // dead brick: destroy the ball immediately
+          this.balls.removeBallInstance(ball);
+          this.state.lostBallsDueToDeadBricks += 1;
+        } else {
+          // normal brick: reduce its health
+          collidedBrick.hit();
+        }
+      }
+    }
+    // remove broken bricks
+    this.bricks.removeBroken();
+  }
+
+  updateUI(){
+    scorePill.textContent = `Level: ${this.state.level}`;
+    ballPill.textContent = `Balls: ${this.balls.balls.filter(b=>!b.removed).length}`;
+    bestPill.textContent = `Best: ${this.state.bestLevel}`;
+    // life button
+    lifeBtn.disabled = !this.state.lifeSaverAvailable;
+    lifeBtn.textContent = this.state.lifeSaverAvailable ? 'Use Life Saver (1)' : 'Life Saver used';
+  }
+
+  useLifeSaver(){
+    if(!this.state.lifeSaverAvailable) return;
+    // if there are removed balls, revive one (create a fresh ball at spawn point)
+    const removedCount = this.balls.balls.filter(b=>b.removed).length;
+    if(removedCount > 0){
+      // permanently remove all removed and then add 1 back (so we don't accumulate phantom removed objects)
+      this.balls.cleanupRemoved();
+      this.balls.addBalls(1);
+      this.state.lifeSaverAvailable = false;
+      this.state.lostBallsDueToDeadBricks = Math.max(0, this.state.lostBallsDueToDeadBricks - 1);
+      this.updateUI();
+      return;
+    }
+    // else if no removed ball currently, still allow to reserve life saver: revive the next lost ball when it happens.
+    // We'll implement by toggling availability off: consume it immediately to prevent hoarding.
+    // But better: inform user via UI; here we'll simply consume and spawn a ball immediately.
+    this.balls.addBalls(1);
+    this.state.lifeSaverAvailable = false;
+    this.updateUI();
+  }
+
+  handleEndOfShot(){
+    // when all balls stopped after a shot
+    if(this.state.ballMoving && this.balls.allStopped){
+      this.state.ballMoving = false;
+      this.state.brickMoving = true;
+
+      // increment level
+      this.state.level += 1;
+      this.storage.setBest(Math.max(this.state.level, this.state.bestLevel));
+      this.state.bestLevel = Math.max(this.state.level, this.state.bestLevel);
+
+      // money: add bonus balls equal to number of collected bonus objects (not implemented here)
+      // Add a new row for next level
+      this.bricks.addRowForLevel(this.state.level);
+    }
+
+    if(this.state.brickMoving){
+      // slide down is visual already: after sliding, stop brickMoving
+      // We'll just cancel brickMoving after adding bricks
+      this.state.brickMoving = false;
+      // cleanup removed balls to finalize losts
+      const removedCount = this.balls.cleanupRemoved();
+      // If there were removed balls and life saver available, enable life button to revive
+      if(removedCount > 0 && this.state.lifeSaverAvailable){
+        // UI will enable lifeBtn and user may click
+      }
+      // update state.ballCount to actual live balls
+      this.state.ballCount = this.balls.balls.length;
+    }
+  }
+
+  renderUIOverlay(){
+    // draw dashed aiming line if not moving
+    if(!this.state.ballMoving && !this.state.brickMoving && this.state.ballPos){
+      ctx.beginPath();
+      ctx.setLineDash([6, 12]);
+      ctx.moveTo(this.state.ballPos.x, this.state.ballPos.y);
+      ctx.lineTo(Mouse.x, Math.min(Mouse.y, H - 200));
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  loop(){
+    clearScreen();
+
+    // background subtle vignette
+    drawBackground();
+
+    // render bricks
+    this.bricks.render();
+
+    // render balls
+    this.balls.render();
+
+    // UI overlay
+    this.renderUIOverlay();
+
+    // collisions
+    this.checkCollisions();
+
+    // bricks hit bottom -> game over
+    if(this.bricks.hitBottom()){
+      this.state.over = true;
+      // draw game over
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(0, H/2 - 80, W, 160);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 44px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('Game Over', W/2, H/2 - 10);
+      ctx.font = '20px Arial';
+      ctx.fillText('A brick reached the danger zone.', W/2, H/2 + 26);
+      this.updateUI();
+      return; // stop animation loop
+    }
+
+    // handle end of shot / level
+    this.handleEndOfShot();
+
+    // update UI
+    this.updateUI();
+
+    // draw top and bottom UI lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, UI_TOP);
+    ctx.lineTo(W, UI_TOP);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, H - BOTTOM_SAFE_ZONE);
+    ctx.lineTo(W, H - BOTTOM_SAFE_ZONE);
+    ctx.stroke();
+
+    // continue loop
+    if(!this.state.over) requestAnimationFrame(this.animateBound);
+  }
+
+  run(){
+    requestAnimationFrame(this.animateBound);
+  }
+
+  downBalls(){
+    if(this.state.over) return;
+    this.state.ballDowning = true;
+    this.balls.down();
+  }
+
+  onResize(){
+    this.onResize = () => {}; // placeholder overwritten earlier
+  }
+}
+
+/* Small helpers */
+function drawBackground(){
+  // subtle radial highlight near top center
+  const g = ctx.createRadialGradient(W/2, UI_TOP+40, 40, W/2, UI_TOP+40, Math.max(W,H));
+  g.addColorStop(0, 'rgba(255,255,255,0.02)');
+  g.addColorStop(0.4, 'rgba(255,255,255,0.006)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,W,H);
+}
+
+/* color helper hsl to hex */
+function hslToHex(h,s,l){
+  // convert to rgb and then hex; s and l are percents
+  s/=100; l/=100;
+  const k = n => (n + h/30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => {
+    const color = l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+    return Math.round(255 * color);
+  };
+  return `#${((1<<24) + (f(0)<<16) + (f(8)<<8) + f(4)).toString(16).slice(1)}`;
+}
+
+/* Instantiate game */
+const game = new Game();
+
+/* Save references for UI updates */
+function tickUI(){
+  // ensure UI shows live counts even if loop replaced later
+  scorePill.textContent = `Level: ${game.state.level}`;
+  ballPill.textContent = `Balls: ${game.balls.balls.filter(b=>!b.removed).length}`;
+  bestPill.textContent = `Best: ${game.state.bestLevel}`;
+  lifeBtn.disabled = !game.state.lifeSaverAvailable;
+  lifeBtn.textContent = game.state.lifeSaverAvailable ? 'Use Life Saver (1)' : 'Life Saver used';
+  requestAnimationFrame(tickUI);
+}
+tickUI();
+
+</script>
+</body>
+</html>
